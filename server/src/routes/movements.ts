@@ -6,6 +6,17 @@ import type { Server as SocketIOServer } from 'socket.io';
 
 const router = Router();
 
+/** « * » → tous les sites ; sinon la liste JSON enregistrée sur le compte. */
+export function sitesAutorises(siteIds?: string | null): '*' | string[] {
+  if (!siteIds || siteIds.trim() === '*') return siteIds?.trim() === '*' ? '*' : [];
+  try {
+    const v = JSON.parse(siteIds);
+    return Array.isArray(v) ? v.map(String) : [];
+  } catch {
+    return [];
+  }
+}
+
 // Get movements with filters (respects role-based filtering)
 router.get('/', authMiddleware, async (req: AuthRequest, res) => {
   try {
@@ -19,11 +30,14 @@ router.get('/', authMiddleware, async (req: AuthRequest, res) => {
     if (req.user?.role === 'operator') {
       whereClause += ` AND user_id = $${paramIndex++}`;
       params.push(req.user.userId);
-    } else if (req.user?.role === 'manager') {
-      // Manager can see their assigned sites — retrieve from user data
-      whereClause += ` AND (from_site_id = ANY($${paramIndex}::text[]) OR to_site_id = ANY($${paramIndex}::text[]))`;
-      paramIndex++;
-      params.push(['douala', 'bafoussam']); // This should come from user.site_ids
+    } else if (req.user?.role === 'manager' || req.user?.role === 'viewer') {
+      // Un responsable ou un lecteur voit les mouvements de SES sites (« * » = tous).
+      const sites = sitesAutorises(req.user.site_ids);
+      if (sites !== '*') {
+        whereClause += ` AND (from_site_id = ANY($${paramIndex}::text[]) OR to_site_id = ANY($${paramIndex}::text[]))`;
+        paramIndex++;
+        params.push(sites);
+      }
     }
     
     if (type) {
@@ -63,7 +77,7 @@ router.get('/', authMiddleware, async (req: AuthRequest, res) => {
        ${whereClause}
        ORDER BY m.created_at DESC
        LIMIT $${paramIndex++}`,
-      [...params, limit]
+      [...params, Math.min(Math.max(parseInt(String(limit), 10) || 100, 1), 100000)]
     );
     
     res.json(result.rows);
